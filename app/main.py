@@ -712,17 +712,70 @@ def get_comic_details(title):
     """
     获取单本漫画的详细信息 (数据库版)。
     """
-    # This function now largely duplicates the logic from _get_unified_comics for a single item.
-    # It's kept for providing the raw, detailed object for editing purposes.
     try:
-        comics_map = load_unified_comics() # This is inefficient but ensures format consistency for now.
-        comic = comics_map.get(title)
-        if comic:
-            return jsonify(comic)
-        else:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # 使用与 _get_unified_comics 类似的查询，但针对单个漫画
+        cursor.execute("""
+            SELECT
+                c.title, c.displayName, c.is_favorite, c.currentPage, c.totalPages, c.date_added,
+                c.local_path, c.local_source_folder, 
+                c.local_cover_path_thumbnail, c.local_cover_path_medium, c.local_cover_path_large,
+                c.online_url, c.online_cover_url,
+                GROUP_CONCAT(DISTINCT CASE WHEN ct.type = 'source' THEN t.name ELSE NULL END) as source_tags,
+                GROUP_CONCAT(DISTINCT CASE WHEN ct.type = 'added' THEN t.name ELSE NULL END) as added_tags,
+                GROUP_CONCAT(DISTINCT CASE WHEN ct.type = 'removed' THEN t.name ELSE NULL END) as removed_tags,
+                GROUP_CONCAT(DISTINCT f.name) as folders
+            FROM comics c
+            LEFT JOIN comic_tags ct ON c.title = ct.comic_title
+            LEFT JOIN tags t ON ct.tag_id = t.id
+            LEFT JOIN comic_folders cf ON c.title = cf.comic_title
+            LEFT JOIN folders f ON cf.folder_id = f.id
+            WHERE c.title = ?
+            GROUP BY c.title
+        """, (title,))
+        
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
             return jsonify({"status": "error", "message": "漫画未找到"}), 404
+
+        # 将 row 格式化为前端期望的 JSON 结构
+        # 这个结构与 load_unified_comics 返回的内部结构一致
+        comic_details = {
+            "title": row['title'],
+            "displayName": row['displayName'],
+            "is_favorite": bool(row['is_favorite']),
+            "currentPage": row['currentPage'],
+            "totalPages": row['totalPages'],
+            "date_added": row['date_added'],
+            "local_info": {
+                "path": row['local_path'],
+                "source_folder": row['local_source_folder'],
+                "cover_paths": {
+                    "thumbnail": row['local_cover_path_thumbnail'],
+                    "medium": row['local_cover_path_medium'],
+                    "large": row['local_cover_path_large'],
+                } if row['local_cover_path_thumbnail'] else None
+            } if row['local_path'] else None,
+            "online_info": {
+                "url": row['online_url'],
+                "cover_url": row['online_cover_url']
+            } if row['online_url'] else None,
+            "source_tags": row['source_tags'].split(',') if row['source_tags'] else [],
+            "added_tags": row['added_tags'].split(',') if row['added_tags'] else [],
+            "removed_tags": row['removed_tags'].split(',') if row['removed_tags'] else [],
+            "folders": row['folders'].split(',') if row['folders'] else []
+        }
+        
+        return jsonify(comic_details)
+
     except Exception as e:
-        print(f"Error in get_comic_details: {e}")
+        import traceback
+        print(f"--- Error in get_comic_details: {e} ---")
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
