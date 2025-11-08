@@ -1149,42 +1149,93 @@ document.addEventListener('DOMContentLoaded', () => {
 
         comicContextMenu.innerHTML = '';
 
-        const title = document.createElement('div');
-        title.className = 'context-menu-item';
-        title.style.fontWeight = 'bold';
-        title.style.cursor = 'default';
-        title.textContent = '移动到文件夹:';
-        comicContextMenu.appendChild(title);
+        // --- "移动到" 一级菜单 ---
+        const moveToItem = document.createElement('div');
+        moveToItem.className = 'context-menu-item has-submenu';
+        moveToItem.textContent = '移动到';
+        comicContextMenu.appendChild(moveToItem);
+
+        const submenu = document.createElement('div');
+        submenu.className = 'context-menu-submenu';
+        moveToItem.appendChild(submenu);
 
         if (customFolders.length > 0) {
             customFolders.forEach(folder => {
-                const item = document.createElement('div');
-                item.className = 'context-menu-item';
-                item.textContent = folder.name;
-                item.addEventListener('click', () => {
+                const subItem = document.createElement('div');
+                subItem.className = 'context-menu-item';
+                subItem.textContent = folder.name;
+                subItem.addEventListener('click', (e) => {
+                    e.stopPropagation(); // 防止触发父级菜单的事件
                     setComicFolder(comic, folder.name);
                     hideContextMenu();
                 });
-                comicContextMenu.appendChild(item);
+                submenu.appendChild(subItem);
             });
+        } else {
+            const noFolderItem = document.createElement('div');
+            noFolderItem.className = 'context-menu-item disabled';
+            noFolderItem.textContent = '(无文件夹)';
+            submenu.appendChild(noFolderItem);
         }
-        
-        if (comic.folder) {
+
+        const currentFolders = comic.folders || [];
+        if (currentFolders.length > 0) {
             const divider = document.createElement('div');
             divider.className = 'context-menu-divider';
-            comicContextMenu.appendChild(divider);
+            submenu.appendChild(divider);
 
             const removeItem = document.createElement('div');
             removeItem.className = 'context-menu-item';
             removeItem.textContent = '从未分类移出';
-            removeItem.addEventListener('click', () => {
+            removeItem.addEventListener('click', (e) => {
+                e.stopPropagation();
                 setComicFolder(comic, null);
                 hideContextMenu();
             });
-            comicContextMenu.appendChild(removeItem);
+            submenu.appendChild(removeItem);
         }
 
+        // --- 分隔线 ---
+        const divider = document.createElement('div');
+        divider.className = 'context-menu-divider';
+        comicContextMenu.appendChild(divider);
 
+        // --- "删除漫画" 一级菜单 ---
+        const deleteItem = document.createElement('div');
+        deleteItem.className = 'context-menu-item danger';
+        deleteItem.textContent = '删除漫画';
+        deleteItem.addEventListener('click', () => {
+            hideContextMenu();
+            showConfirmationModal(
+                `删除漫画`,
+                `您确定要永久删除漫画 "${comic.displayName}" 吗？<br>这将删除本地文件和封面，此操作无法撤销。`,
+                async () => {
+                    try {
+                        const response = await fetch(`/api/comic/${encodeURIComponent(comic.title)}`, {
+                            method: 'DELETE'
+                        });
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.message || '删除失败');
+                        }
+                        
+                        const card = comicShelf.querySelector(`.comic-card[data-title="${comic.title}"]`);
+                        if (card) card.remove();
+
+                        allComics = allComics.filter(c => c.title !== comic.title);
+
+                        updateComicCounts();
+                        showToast(`漫画 "${comic.displayName}" 已被删除。`, 'success');
+                    } catch (error) {
+                        console.error('删除漫画失败:', error);
+                        showToast(`删除失败: ${error.message}`, 'error');
+                    }
+                }
+            );
+        });
+        comicContextMenu.appendChild(deleteItem);
+
+        // --- 显示并定位菜单 ---
         comicContextMenu.style.display = 'block';
         const { clientX: mouseX, clientY: mouseY } = event;
         const { x, y, width, height } = comicContextMenu.getBoundingClientRect();
@@ -1192,6 +1243,11 @@ document.addEventListener('DOMContentLoaded', () => {
         
         comicContextMenu.style.left = `${mouseX + width > innerWidth ? innerWidth - width - 5 : mouseX}px`;
         comicContextMenu.style.top = `${mouseY + height > innerHeight ? innerHeight - height - 5 : mouseY}px`;
+
+        // --- 子菜单定位 ---
+        const menuRect = moveToItem.getBoundingClientRect();
+        submenu.style.left = `${menuRect.width}px`;
+        submenu.style.top = `0px`;
     }
 
     function hideContextMenu() {
@@ -1201,17 +1257,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function setComicFolder(comic, folderName) {
         try {
-            await fetch('/api/comics/folder', {
+            // 'null' folderName means remove from all folders
+            const isRemoving = folderName === null;
+            const url = isRemoving ? '/api/comics/folder/remove_all' : '/api/comics/folder';
+            const body = isRemoving ? { titles: [comic.title] } : { titles: [comic.title], folder: folderName };
+
+            await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ titles: [comic.title], folder: folderName })
+                body: JSON.stringify(body)
             });
             
-            if (shelfState.filter !== 'all' && shelfState.filter !== folderName) {
+            // Optimistic UI update
+            if (isRemoving) {
+                comic.folders = [];
+            } else {
+                if (!comic.folders) comic.folders = [];
+                if (!comic.folders.includes(folderName)) {
+                    comic.folders.push(folderName);
+                }
+            }
+            
+            // If we are in a folder view and the comic was removed from it
+            if (isRemoving && !['all', 'favorites', 'web', 'downloaded', 'undownloaded'].includes(shelfState.filter)) {
+                 const card = comicShelf.querySelector(`.comic-card[data-title="${comic.title}"]`);
+                 if (card) card.remove();
+            } else if (shelfState.filter !== 'all' && shelfState.filter !== folderName && !isRemoving) {
+                // If we moved it to a folder that is not the current view
                 const card = comicShelf.querySelector(`.comic-card[data-title="${comic.title}"]`);
                 if (card) card.remove();
             }
-            comic.folder = folderName;
+
             updateComicCounts();
         } catch (error) {
             console.error('更新漫画文件夹失败:', error);

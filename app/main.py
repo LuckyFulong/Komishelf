@@ -1231,6 +1231,62 @@ def api_delete_folder(folder_name):
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+@app.route('/api/comic/<string:title>', methods=['DELETE'])
+def delete_single_comic(title):
+    """
+    完全删除单本漫画，包括其本地文件和封面。
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT local_path, local_cover_path_thumbnail FROM comics WHERE title = ?", (title,))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return jsonify({"status": "error", "message": "漫画未找到"}), 404
+
+        # 删除本地文件
+        if row['local_path'] and os.path.exists(row['local_path']):
+            try:
+                os.remove(row['local_path'])
+                print(f"已删除本地漫画文件: {row['local_path']}")
+            except OSError as e:
+                print(f"删除本地漫画文件时出错 {row['local_path']}: {e}")
+        
+        # 删除封面
+        if row['local_cover_path_thumbnail']:
+            base_cover_path = os.path.basename(row['local_cover_path_thumbnail'])
+            for size_name in COVER_SIZES.keys():
+                cover_path = os.path.join(COVERS_DIRECTORY, size_name, base_cover_path)
+                if os.path.exists(cover_path):
+                    try:
+                        os.remove(cover_path)
+                    except OSError as e:
+                        print(f"删除封面文件时出错 {cover_path}: {e}")
+        
+        # 从数据库中删除条目
+        cursor.execute("DELETE FROM comics WHERE title = ?", (title,))
+        deleted_count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if deleted_count > 0:
+            return jsonify({"status": "success", "message": f"成功删除漫画 '{title}'。"})
+        else:
+            # This case should ideally not be reached if the initial find was successful
+            return jsonify({"status": "error", "message": "在数据库中删除漫画时失败。"}), 500
+
+    except Exception as e:
+        import traceback
+        print(f"--- ERROR in delete_single_comic: {e} ---")
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 # --- 新增：油猴脚本数据接口 (数据库版) ---
 @app.route('/api/tampermonkey/sync', methods=['POST'])
 def tampermonkey_sync():
@@ -1674,6 +1730,26 @@ def handle_folder_assignment():
         inserts = [(title, folder_id) for title in titles_to_update]
         cursor.executemany("INSERT OR IGNORE INTO comic_folders (comic_title, folder_id) VALUES (?, ?)", inserts)
 
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/comics/folder/remove_all', methods=['POST'])
+def remove_from_all_folders():
+    data = request.json
+    titles_to_update = data.get('titles', [])
+    if not isinstance(titles_to_update, list):
+        return jsonify({"status": "error", "message": "无效的请求格式"}), 400
+    if not titles_to_update:
+        return jsonify({"status": "success"})
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        placeholders = ','.join('?' for _ in titles_to_update)
+        cursor.execute(f"DELETE FROM comic_folders WHERE comic_title IN ({placeholders})", tuple(titles_to_update))
         conn.commit()
         conn.close()
         return jsonify({"status": "success"})
