@@ -1614,5 +1614,55 @@ body.cover-only-mode .comic-card .progress-bar-container {
 }
 
 .custom-checkbox input:checked ~ .checkmark:after {
-    transform: translateX(20px);
-}
+        transform: translateX(20px);
+    }
+    
+    /* --- Toast Notifications --- */
+    .toast-container {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        z-index: 2000;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 10px;
+    }
+    
+    .toast {
+        background-color: var(--surface-color);
+        color: var(--primary-text-color);
+        padding: 12px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        border-left: 4px solid var(--accent-color);
+        opacity: 0;
+        transform: translateX(100%);
+        transition: all 0.4s cubic-bezier(0.68, -0.55, 0.27, 1.55);
+        font-size: 0.95rem;
+        min-width: 250px;
+        max-width: 350px;
+    }
+    
+    .toast.show {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    
+    .toast.hide {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    
+    .toast.success {
+        border-left-color: #4caf50; /* Green */
+    }
+    
+    .toast.error {
+        border-left-color: var(--danger-color); /* Red */
+    }
+    
+    .toast.info {
+        border-left-color: var(--accent-color); /* Purple */
+    }
+    

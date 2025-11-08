@@ -108,6 +108,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const scanProgressContainer = document.getElementById('scan-progress-container');
     const scanProgressBarInner = document.getElementById('scan-progress-bar-inner');
     const scanProgressText = document.getElementById('scan-progress-text');
+    const toastContainer = document.getElementById('toast-container');
 
     // --- 全局状态 ---
     let allComics = [];
@@ -125,6 +126,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const comicsPerPage = 30; // Adjust as needed
     let hasMoreComics = true;
     let isLoadingMore = false;
+
+    // --- Toast 通知 ---
+    function showToast(message, type = 'info', duration = 3000) {
+        if (!toastContainer) return;
+
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+
+        toastContainer.appendChild(toast);
+
+        // Animate in
+        setTimeout(() => {
+            toast.classList.add('show');
+        }, 10); // Small delay to allow transition
+
+        // Animate out and remove
+        setTimeout(() => {
+            toast.classList.remove('show');
+            toast.classList.add('hide');
+            toast.addEventListener('transitionend', () => {
+                toast.remove();
+            });
+        }, duration);
+    }
 
     // --- SVG 图标 ---
     const icons = {
@@ -333,7 +359,7 @@ document.addEventListener('DOMContentLoaded', () => {
             detailsView.style.display = 'flex';
         } catch (error) {
             console.error(error);
-            showConfirmationModal('加载失败', error.message, null, true);
+            showToast(`加载失败: ${error.message}`, 'error');
         }
     }
 
@@ -473,77 +499,41 @@ document.addEventListener('DOMContentLoaded', () => {
     
 
         async function saveDisplayName() {
-
             if (!currentDetailComic) return;
 
-    
-
             const newDisplayName = displayNameEditInput.value.trim();
-
             if (!newDisplayName || newDisplayName === (currentDetailComic.displayName || currentDetailComic.title)) {
-
                 toggleDisplayNameEditMode(); // Exit edit mode if no change or empty
-
                 return;
-
             }
-
-    
 
             try {
-
                 const response = await fetch(`/api/comic/${encodeURIComponent(currentDetailComic.title)}/display_name`, {
-
                     method: 'PUT',
-
                     headers: { 'Content-Type': 'application/json' },
-
                     body: JSON.stringify({ displayName: newDisplayName })
-
                 });
 
-    
-
                 if (!response.ok) {
-
                     const err = await response.json();
-
                     throw new Error(err.message || '更新显示名称失败');
-
                 }
-
-    
 
                 currentDetailComic.displayName = newDisplayName;
-
                 detailsTitle.textContent = newDisplayName; // Update UI immediately
-
                 
-
                 // Also update the comic in allComics array
-
                 const comicInAllComics = allComics.find(c => c.title === currentDetailComic.title);
-
                 if (comicInAllComics) {
-
                     comicInAllComics.displayName = newDisplayName;
-
                 }
 
-    
-
                 toggleDisplayNameEditMode(); // Exit edit mode
-
-                showConfirmationModal('成功', '显示名称已更新。', null, true);
-
+                showToast('显示名称已更新。', 'success');
             } catch (error) {
-
                 console.error('更新显示名称失败:', error);
-
-                showConfirmationModal('错误', error.message, null, true);
-
+                showToast(`更新失败: ${error.message}`, 'error');
             }
-
         }
 
     
@@ -637,7 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             console.error('Tag update error:', error);
-            showConfirmationModal('错误', error.message, null, true);
+            showToast(`标签更新失败: ${error.message}`, 'error');
             // Re-fetch to get the ground truth if optimistic update fails
             openDetailsView(currentDetailComic.title);
         }
@@ -801,11 +791,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         // If we deleted enough comics to create a gap, try to fill it
                         await fetchAndRenderComics(currentPage, comicsPerPage, true);
                     }
-                    showConfirmationModal('删除成功', `成功删除了 ${titles.length} 本漫画。`, null, true);
+                    showToast(`成功删除了 ${titles.length} 本漫画。`, 'success');
                     toggleSelectionMode();
                 } catch (error) {
                     console.error('批量删除失败:', error);
-                    showConfirmationModal('删除失败', error.message, null, true);
+                    showToast(`删除失败: ${error.message}`, 'error');
                 }
             }
         );
@@ -813,7 +803,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleMergeComics() {
         if (selectedComics.size !== 2) {
-            showConfirmationModal('合并错误', '请选择且仅选择两本漫画进行合并。', null, true);
+            showToast('请选择且仅选择两本漫画进行合并。', 'error');
             return;
         }
 
@@ -822,7 +812,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const comic2 = allComics.find(c => c.title === title2);
 
         if (!comic1 || !comic2) {
-            showConfirmationModal('合并错误', '未能找到所选漫画的详细信息。', null, true);
+            showToast('未能找到所选漫画的详细信息。', 'error');
             return;
         }
 
@@ -870,7 +860,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function performMerge(onlineComic, localComic) {
         if (!onlineComic || !localComic) {
-            showConfirmationModal('合并错误', '未能正确识别在线漫画和本地漫画。', null, true);
+            showToast('未能正确识别在线漫画和本地漫画。', 'error');
             return;
         }
 
@@ -894,13 +884,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         throw new Error(result.message || '合并失败');
                     }
 
-                    showConfirmationModal('合并成功', result.message, null, true);
-                    fetchAndRenderComics(1, comicsPerPage, false);
+                    showToast(result.message, 'success');
+                    await fetchAndRenderComics(1, comicsPerPage, false);
                 } catch (error) {
                     console.error('合并漫画失败:', error);
-                    showConfirmationModal('合并失败', error.message, null, true);
-                } finally {
-                    toggleSelectionMode();
+                    showToast(`合并失败: ${error.message}`, 'error');
+                    if (selectionMode) {
+                        toggleSelectionMode();
+                    }
                 }
             }
         );
@@ -1067,7 +1058,7 @@ document.addEventListener('DOMContentLoaded', () => {
             newFolderNameInput.value = '';
         } catch (error) {
             console.error('创建文件夹失败:', error);
-            showConfirmationModal('创建失败', error.message, null, true);
+            showToast(`创建失败: ${error.message}`, 'error');
         }
     }
 
@@ -1083,7 +1074,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         if (!updatedFolder.name) {
-            showConfirmationModal('保存失败', '文件夹名称不能为空。', null, true);
+            showToast('文件夹名称不能为空。', 'error');
             return;
         }
 
@@ -1116,7 +1107,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             console.error('保存文件夹更改失败:', error);
-            showConfirmationModal('保存失败', error.message, null, true);
+            showToast(`保存失败: ${error.message}`, 'error');
         }
     }
 
@@ -1142,7 +1133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 } catch (error) {
                     console.error('删除文件夹失败:', error);
-                    showConfirmationModal('删除失败', error.message, null, true);
+                    showToast(`删除失败: ${error.message}`, 'error');
                 }
             }
         );
@@ -1901,7 +1892,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 alertMessage = error.message;
             }
-            showConfirmationModal('加载设置失败', alertMessage, null, true);
+            showToast(`加载设置失败: ${alertMessage}`, 'error');
         }
     }
 
@@ -1952,7 +1943,7 @@ document.addEventListener('DOMContentLoaded', () => {
             startScanPolling(); 
         } catch (error) {
             console.error('添加受控文件夹失败:', error);
-            showConfirmationModal('添加失败', error.message, null, true);
+            showToast(`添加失败: ${error.message}`, 'error');
         }
     }
 
@@ -1972,7 +1963,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await fetchAndRenderComics(1, comicsPerPage, false);
                 } catch (error) {
                     console.error('删除漫画库路径失败:', error);
-                    showConfirmationModal('删除失败', error.message, null, true);
+                    showToast(`删除失败: ${error.message}`, 'error');
                 }
             }
         );
@@ -1997,14 +1988,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(result.message || '迁移失败');
             }
             
-            showConfirmationModal('迁移成功', result.message, null, true);
-            await openSettingsModal(); // Refresh the settings modal
-            // Also refresh the main comic list in case the current view is affected
-            await fetchAndRenderComics(1, comicsPerPage, false);
-
+            showToast(result.message, 'success');
+            await openSettingsModal(); // Refresh the list
+            startScanPolling(); // Start scanning the new path
         } catch (error) {
             console.error('迁移文件夹失败:', error);
-            showConfirmationModal('迁移失败', error.message, null, true);
+            showToast(`迁移失败: ${error.message}`, 'error');
         }
     }
 
@@ -2019,10 +2008,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!response.ok) {
                         throw new Error(result.message || '清理失败');
                     }
-                    showConfirmationModal('清理完成', `成功删除了 ${result.deleted_files} 个无效的封面文件。`, null, true);
+                    showToast(result.message, 'success');
                 } catch (error) {
-                    console.error('清理封面缓存失败:', error);
-                    showConfirmationModal('清理失败', error.message, null, true);
+                    console.error('清理缓存失败:', error);
+                    showToast(`清理失败: ${error.message}`, 'error');
                 }
             }
         );
@@ -2039,11 +2028,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (!response.ok) {
                         throw new Error(result.message || '清理失败');
                     }
-                    showConfirmationModal('清理完成', `成功删除了 ${result.cleaned_count} 个无效的数据库条目。`, null, true);
-                    await fetchAndRenderComics(1, comicsPerPage, false);
+                    showToast(result.message, 'success');
+                    // Refresh the shelf as comics might have been removed
+                    fetchAndRenderComics(1, comicsPerPage, false);
                 } catch (error) {
                     console.error('清理数据库失败:', error);
-                    showConfirmationModal('清理失败', error.message, null, true);
+                    showToast(`清理失败: ${error.message}`, 'error');
                 }
             }
         );
@@ -2065,9 +2055,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     await fetchAndRenderComics(1, comicsPerPage, false);
                     await loadCustomFolders(); // Reload folders as they are cleared
                     await openSettingsModal(); // Re-open settings to show updated managed folders (empty)
+                    // This will likely cause a full reload or redirect, handled by the server
                 } catch (error) {
                     console.error('清除所有数据失败:', error);
-                    showConfirmationModal('清除失败', error.message, null, true);
+                    showToast(`操作失败: ${error.message}`, 'error');
                 }
             }
         );
