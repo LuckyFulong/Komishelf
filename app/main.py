@@ -25,6 +25,84 @@ app = Flask(__name__, static_folder=WEB_DIRECTORY)
 CONFIG_FILE = os.path.join(APP_DIR, 'config.json')
 DB_FILE = os.path.join(APP_DIR, 'comics.db') # <--- 使用 SQLite 数据库
 
+# --- 数据库初始化 ---
+def init_db():
+    """初始化数据库，创建表和索引（如果不存在）。"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # 创建表
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS comics (
+        title TEXT PRIMARY KEY,
+        displayName TEXT,
+        is_favorite INTEGER DEFAULT 0,
+        currentPage INTEGER DEFAULT 0,
+        totalPages INTEGER DEFAULT 0,
+        date_added REAL,
+        local_path TEXT,
+        local_source_folder TEXT,
+        local_cover_path_thumbnail TEXT,
+        local_cover_path_medium TEXT,
+        local_cover_path_large TEXT,
+        online_url TEXT,
+        online_cover_url TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        auto INTEGER DEFAULT 0,
+        name_includes TEXT,
+        tag_includes TEXT
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS comic_folders (
+        comic_title TEXT,
+        folder_id INTEGER,
+        PRIMARY KEY (comic_title, folder_id),
+        FOREIGN KEY (comic_title) REFERENCES comics (title) ON DELETE CASCADE,
+        FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE CASCADE
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS comic_tags (
+        comic_title TEXT,
+        tag_id INTEGER,
+        type TEXT,
+        PRIMARY KEY (comic_title, tag_id, type),
+        FOREIGN KEY (comic_title) REFERENCES comics (title) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
+    )
+    """)
+
+    # 创建索引以提高查询性能
+    print("正在检查并创建数据库索引...")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_date_added ON comics (date_added)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_displayName ON comics (displayName)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_is_favorite ON comics (is_favorite)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_local_path ON comics (local_path)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_tags_comic_title ON comic_tags (comic_title)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_tags_tag_id ON comic_tags (tag_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_folders_comic_title ON comic_folders (comic_title)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_folders_folder_id ON comic_folders (folder_id)")
+    
+    conn.commit()
+    conn.close()
+    print("数据库初始化完成，表和索引已确认。")
+
 # --- 数据库管理 ---
 def get_db_connection():
     """创建并返回一个数据库连接，并设置 row_factory 以便按列名访问。"""
@@ -1571,6 +1649,7 @@ def serve_static(path):
     return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
+    init_db()
     threading.Thread(target=scan_comics, daemon=True).start()
     url = "http://127.0.0.1:5000"
     threading.Timer(1.5, lambda: webbrowser.open_new(url)).start()
