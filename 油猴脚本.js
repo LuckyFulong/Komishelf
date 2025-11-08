@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WNACG 封面标记工具
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  在WNACG漫画封面上进行标记，并支持数据导入导出及同步到Gemini书架。
+// @version      1.4
+// @description  在WNACG漫画封面上进行标记，并支持数据导入导出及同步到Gemini书架（移除了同步延迟）。
 // @author       Gemini
 // @match        *://*.wnacg.com/*
 // @grant        GM_addStyle
@@ -69,19 +69,7 @@
         return (d.textContent || d.innerText || '').trim();
     }
 
-    // 新增：防抖函数
-    function debounce(func, wait) {
-        let timeout;
-        return function(...args) {
-            const context = this;
-            console.log('[WNACG MOD] Debounce: 计时器重置。');
-            clearTimeout(timeout);
-            timeout = setTimeout(() => {
-                console.log('[WNACG MOD] Debounce: 执行函数。');
-                func.apply(context, args);
-            }, wait);
-        };
-    }
+
 
     // 新增：获取格式化日期函数 YYYY/MM/DD
     function getFormattedDate() {
@@ -763,8 +751,7 @@
         });
     }
 
-    // 新增：创建防抖版的同步函数
-    const debouncedSync = debounce(syncDataToBookshelf, 2500);
+
 
     // 新增：切换自动同步状态的函数
     function toggleAutoSync() {
@@ -1040,8 +1027,8 @@
 
             const triggerAutoSync = () => {
                 if (GM_STORE.autoSyncEnabled) {
-                    console.log('[WNACG MOD] 自动同步已开启，调用防抖同步函数。');
-                    debouncedSync();
+                    console.log('[WNACG MOD] 自动同步已开启，调用同步函数。');
+                    syncDataToBookshelf();
                 }
             };
 
