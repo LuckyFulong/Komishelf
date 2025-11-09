@@ -1152,7 +1152,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- "移动到" 一级菜单 ---
         const moveToItem = document.createElement('div');
         moveToItem.className = 'context-menu-item has-submenu';
-        moveToItem.textContent = '移动到';
+        moveToItem.textContent = '添加到';
         comicContextMenu.appendChild(moveToItem);
 
         const submenu = document.createElement('div');
@@ -1186,7 +1186,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const removeItem = document.createElement('div');
             removeItem.className = 'context-menu-item';
-            removeItem.textContent = '从未分类移出';
+            removeItem.textContent = '从所有分类移出';
             removeItem.addEventListener('click', (e) => {
                 e.stopPropagation();
                 setComicFolder(comic, null);
