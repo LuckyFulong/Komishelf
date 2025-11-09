@@ -4,6 +4,7 @@ import traceback
 from PIL import Image
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import io
 
 import database
 import scanner
