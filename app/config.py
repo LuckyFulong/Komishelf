@@ -18,7 +18,7 @@ COVER_SIZES = {
 
 # --- 文件类型配置 ---
 IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
-ALLOWED_EXTENSIONS = ['.zip', '.cbz']
+ALLOWED_EXTENSIONS = ['.zip', '.cbz', '.rar']
 
 # --- 配置管理函数 ---
 def get_config():

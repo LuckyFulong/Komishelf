@@ -5,6 +5,7 @@ import io
 import time
 import traceback
 from PIL import Image
+import rarfile
 
 import database
 from config import (
@@ -67,6 +68,32 @@ def get_first_image_from_zip(zip_path):
             return z.read(image_files[0])
     except Exception as e:
         print(f"无法提取封面 {zip_path}: {e}")
+    return None
+
+def get_image_files_from_rar(rar_path):
+    """从 RAR 文件中获取所有图片文件的列表。"""
+    try:
+        with rarfile.RarFile(rar_path, 'r') as r:
+            return sorted([f.filename for f in r.infolist() if not f.isdir and any(f.filename.lower().endswith(ext) for ext in IMAGE_EXTENSIONS)])
+    except FileNotFoundError:
+        raise
+    except rarfile.BadRarFile:
+        print(f"无法读取 RAR 文件 (可能已损坏或密码保护) {rar_path}")
+    except Exception as e:
+        print(f"无法读取 RAR 文件 {rar_path}: {e}")
+    return []
+
+def get_first_image_from_rar(rar_path):
+    """从 RAR 文件中提取第一张图片作为封面。"""
+    image_files = get_image_files_from_rar(rar_path)
+    if not image_files: return None
+    try:
+        with rarfile.RarFile(rar_path, 'r') as r:
+            return r.read(image_files[0])
+    except rarfile.BadRarFile:
+        print(f"无法提取 RAR 封面 (可能已损坏或密码保护) {rar_path}")
+    except Exception as e:
+        print(f"无法提取 RAR 封面 {rar_path}: {e}")
     return None
 
 # --- 核心扫描和分类逻辑 ---
@@ -163,7 +190,12 @@ def scan_comics(folder_to_scan=None):
             if cover_path_thumb and os.path.exists(os.path.join(WEB_DIRECTORY, cover_path_thumb.replace('/', os.sep))):
                 continue
 
-            image_data = get_first_image_from_zip(comic_path)
+            file_extension = os.path.splitext(comic_path)[1].lower()
+            image_data = None
+            if file_extension == '.zip' or file_extension == '.cbz':
+                image_data = get_first_image_from_zip(comic_path)
+            elif file_extension == '.rar':
+                image_data = get_first_image_from_rar(comic_path)
             if image_data:
                 try:
                     img = Image.open(io.BytesIO(image_data)).convert("RGB")
