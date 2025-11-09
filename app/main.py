@@ -6,6 +6,7 @@ import webbrowser
 import io
 import time
 import sqlite3
+import send2trash
 from PIL import Image
 from flask import Flask, jsonify, send_from_directory, request, send_file
 from watchdog.observers import Observer
@@ -1232,11 +1233,16 @@ def api_delete_folder(folder_name):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route('/api/comic/<string:title>', methods=['DELETE'])
-def delete_single_comic(title):
+@app.route('/api/comic/delete_single', methods=['POST'])
+def delete_single_comic():
     """
     完全删除单本漫画，包括其本地文件和封面。
     """
+    data = request.json
+    title = data.get('title')
+    if not title:
+        return jsonify({"status": "error", "message": "缺少标题"}), 400
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1251,10 +1257,10 @@ def delete_single_comic(title):
         # 删除本地文件
         if row['local_path'] and os.path.exists(row['local_path']):
             try:
-                os.remove(row['local_path'])
-                print(f"已删除本地漫画文件: {row['local_path']}")
+                send2trash.send2trash(row['local_path'])
+                print(f"已将本地漫画文件移动到回收站: {row['local_path']}")
             except OSError as e:
-                print(f"删除本地漫画文件时出错 {row['local_path']}: {e}")
+                print(f"移动本地漫画文件到回收站时出错 {row['local_path']}: {e}")
         
         # 删除封面
         if row['local_cover_path_thumbnail']:
@@ -1269,16 +1275,10 @@ def delete_single_comic(title):
         
         # 从数据库中删除条目
         cursor.execute("DELETE FROM comics WHERE title = ?", (title,))
-        deleted_count = cursor.rowcount
-        
         conn.commit()
         conn.close()
         
-        if deleted_count > 0:
-            return jsonify({"status": "success", "message": f"成功删除漫画 '{title}'。"})
-        else:
-            # This case should ideally not be reached if the initial find was successful
-            return jsonify({"status": "error", "message": "在数据库中删除漫画时失败。"}), 500
+        return jsonify({"status": "success", "message": f"成功删除漫画 '{title}'。"})
 
     except Exception as e:
         import traceback
@@ -1634,10 +1634,10 @@ def delete_full_comics():
             # 删除本地文件
             if row['local_path'] and os.path.exists(row['local_path']):
                 try:
-                    os.remove(row['local_path'])
-                    print(f"Deleted local comic file: {row['local_path']}")
+                    send2trash.send2trash(row['local_path'])
+                    print(f"已将本地漫画文件移动到回收站: {row['local_path']}")
                 except OSError as e:
-                    print(f"Error deleting local comic file {row['local_path']}: {e}")
+                    print(f"移动本地漫画文件到回收站时出错 {row['local_path']}: {e}")
             
             # 删除封面
             if row['local_cover_path_thumbnail']:
