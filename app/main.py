@@ -5,12 +5,12 @@ import threading
 import webbrowser
 import io
 import time
-import sqlite3
 import send2trash
 from PIL import Image
 from flask import Flask, jsonify, send_from_directory, request, send_file
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import database
 
 # --- 配置 ---
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -26,92 +26,6 @@ app = Flask(__name__, static_folder=WEB_DIRECTORY)
 
 # --- 数据库和文件路径定义 ---
 CONFIG_FILE = os.path.join(APP_DIR, 'config.json')
-DB_FILE = os.path.join(APP_DIR, 'comics.db') # <--- 使用 SQLite 数据库
-
-# --- 数据库初始化 ---
-def init_db():
-    """初始化数据库，创建表和索引（如果不存在）。"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # 创建表
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS comics (
-        title TEXT PRIMARY KEY,
-        displayName TEXT,
-        is_favorite INTEGER DEFAULT 0,
-        currentPage INTEGER DEFAULT 0,
-        totalPages INTEGER DEFAULT 0,
-        date_added REAL,
-        local_path TEXT,
-        local_source_folder TEXT,
-        local_cover_path_thumbnail TEXT,
-        local_cover_path_medium TEXT,
-        local_cover_path_large TEXT,
-        online_url TEXT,
-        online_cover_url TEXT
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS folders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        auto INTEGER DEFAULT 0,
-        name_includes TEXT,
-        tag_includes TEXT
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tags (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS comic_folders (
-        comic_title TEXT,
-        folder_id INTEGER,
-        PRIMARY KEY (comic_title, folder_id),
-        FOREIGN KEY (comic_title) REFERENCES comics (title) ON DELETE CASCADE,
-        FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE CASCADE
-    )
-    """)
-
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS comic_tags (
-        comic_title TEXT,
-        tag_id INTEGER,
-        type TEXT,
-        PRIMARY KEY (comic_title, tag_id, type),
-        FOREIGN KEY (comic_title) REFERENCES comics (title) ON DELETE CASCADE,
-        FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
-    )
-    """)
-
-    # 创建索引以提高查询性能
-    print("正在检查并创建数据库索引...")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_date_added ON comics (date_added)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_displayName ON comics (displayName)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_is_favorite ON comics (is_favorite)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comics_local_path ON comics (local_path)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_tags_comic_title ON comic_tags (comic_title)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_tags_tag_id ON comic_tags (tag_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_folders_comic_title ON comic_folders (comic_title)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_comic_folders_folder_id ON comic_folders (folder_id)")
-    
-    conn.commit()
-    conn.close()
-    print("数据库初始化完成，表和索引已确认。")
-
-# --- 数据库管理 ---
-def get_db_connection():
-    """创建并返回一个数据库连接，并设置 row_factory 以便按列名访问。"""
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 # --- 配置管理 ---
 def get_config():
@@ -134,7 +48,7 @@ def sanitize_filename(filename):
     清理文件名，移除或替换不允许的字符，并限制长度。
     """
     # 替换不允许的字符
-    invalid_chars = '<>:"/\\|?*'
+    invalid_chars = '<>:\"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, '')
     # 替换可能导致路径问题的字符
@@ -154,105 +68,12 @@ def sanitize_filename(filename):
         filename = filename[:200]
     return filename
 
-# --- 文件夹管理 (数据库版) ---
-def get_folders():
-    """从数据库获取所有文件夹定义。"""
-    folders = []
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT name, auto, name_includes, tag_includes FROM folders ORDER BY name")
-        rows = c.fetchall()
-        conn.close()
-        for row in rows:
-            folders.append({
-                "name": row['name'],
-                "auto": bool(row['auto']),
-                "name_includes": json.loads(row['name_includes']),
-                "tag_includes": json.loads(row['tag_includes'])
-            })
-        return folders
-    except Exception as e:
-        print(f"Error getting folders from DB: {e}")
-        return []
-
-# --- 统一漫画数据管理 (数据库版) ---
-def load_unified_comics():
-    """
-    从数据库加载所有漫画数据，并以原始 JSON 文件的字典格式返回。
-    这主要用于需要全量数据的旧函数，新逻辑应直接查询数据库。
-    """
-    comics_map = {}
-    try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        # 主要的 comics 表查询
-        c.execute("SELECT * FROM comics")
-        comics_rows = c.fetchall()
-
-        # 预加载所有标签和文件夹关系以提高效率
-        c.execute("""
-            SELECT ct.comic_title, t.name, ct.type 
-            FROM comic_tags ct JOIN tags t ON ct.tag_id = t.id
-        """)
-        tags_rows = c.fetchall()
-        tags_map = {}
-        for row in tags_rows:
-            if row['comic_title'] not in tags_map:
-                tags_map[row['comic_title']] = {'source': [], 'added': [], 'removed': []}
-            tags_map[row['comic_title']][row['type']].append(row['name'])
-
-        c.execute("""
-            SELECT cf.comic_title, f.name 
-            FROM comic_folders cf JOIN folders f ON cf.folder_id = f.id
-        """)
-        folders_rows = c.fetchall()
-        comic_folders_map = {}
-        for row in folders_rows:
-            if row['comic_title'] not in comic_folders_map:
-                comic_folders_map[row['comic_title']] = []
-            comic_folders_map[row['comic_title']].append(row['name'])
-
-        conn.close()
-
-        for row in comics_rows:
-            title = row['title']
-            comics_map[title] = {
-                "title": title,
-                "displayName": row['displayName'],
-                "is_favorite": bool(row['is_favorite']),
-                "currentPage": row['currentPage'],
-                "totalPages": row['totalPages'],
-                "date_added": row['date_added'],
-                "local_info": {
-                    "path": row['local_path'],
-                    "source_folder": row['local_source_folder'],
-                    "cover_paths": {
-                        "thumbnail": row['local_cover_path_thumbnail'],
-                        "medium": row['local_cover_path_medium'],
-                        "large": row['local_cover_path_large'],
-                    } if row['local_cover_path_thumbnail'] else None
-                } if row['local_path'] else None,
-                "online_info": {
-                    "url": row['online_url'],
-                    "cover_url": row['online_cover_url']
-                } if row['online_url'] else None,
-                "source_tags": tags_map.get(title, {}).get('source', []),
-                "added_tags": tags_map.get(title, {}).get('added', []),
-                "removed_tags": tags_map.get(title, {}).get('removed', []),
-                "folders": comic_folders_map.get(title, [])
-            }
-        return comics_map
-    except Exception as e:
-        print(f"Error loading unified comics from DB: {e}")
-        return {}
-
 # save_unified_comics 和 save_folders 函数不再需要，因为我们将直接执行 SQL 命令。
 # 为了安全起见，暂时将它们注释掉，而不是完全删除。
 # def save_folders(folders):
 #     with open(FOLDERS_FILE, 'w', encoding='utf-8') as f:
 #         json.dump(folders, f, ensure_ascii=False, indent=4)
-#
+# 
 # def save_unified_comics(unified_comics_data):
 #     with open(UNIFIED_DB_FILE, 'w', encoding='utf-8') as f:
 #         json.dump(unified_comics_data, f, ensure_ascii=False, indent=4)
@@ -299,7 +120,7 @@ def scan_comics(folder_to_scan=None):
         for size_name in COVER_SIZES.keys():
             os.makedirs(os.path.join(COVERS_DIRECTORY, size_name), exist_ok=True)
 
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         scan_folders = [folder_to_scan] if folder_to_scan else config.get('managed_folders', [])
@@ -344,23 +165,25 @@ def scan_comics(folder_to_scan=None):
             result = cursor.fetchone()
 
             if result is None: # 漫画名不存在，是全新的
-                comics_to_add.append((
-                    comic_name, comic_name, time.time(), comic_path, source_folder
-                ))
+                comics_to_add.append(
+                    (comic_name, comic_name, time.time(), comic_path, source_folder)
+                )
             elif result['local_path'] is None: # 漫画存在但没有本地信息
                 comics_to_update.append((comic_path, source_folder, comic_name))
 
         if comics_to_add:
-            cursor.executemany("""
-                INSERT INTO comics (title, displayName, date_added, local_path, local_source_folder)
-                VALUES (?, ?, ?, ?, ?)
-            """, comics_to_add)
+            cursor.executemany(
+                """INSERT INTO comics (title, displayName, date_added, local_path, local_source_folder)
+                VALUES (?, ?, ?, ?, ?)""",
+                comics_to_add
+            )
             print(f"快速添加了 {len(comics_to_add)} 本新漫画。")
 
         if comics_to_update:
-            cursor.executemany("""
-                UPDATE comics SET local_path = ?, local_source_folder = ? WHERE title = ?
-            """, comics_to_update)
+            cursor.executemany(
+                """UPDATE comics SET local_path = ?, local_source_folder = ? WHERE title = ?""",
+                comics_to_update
+            )
             print(f"为 {len(comics_to_update)} 本在线漫画关联了本地文件。")
         
         conn.commit()
@@ -411,8 +234,8 @@ def scan_comics(folder_to_scan=None):
                 if len(cover_paths) == len(COVER_SIZES):
                     cursor.execute("""
                         UPDATE comics SET 
-                        local_cover_path_thumbnail = ?, 
-                        local_cover_path_medium = ?, 
+                        local_cover_path_thumbnail = ?,
+                        local_cover_path_medium = ?,
                         local_cover_path_large = ?
                         WHERE title = ?
                     """, (
@@ -439,7 +262,7 @@ def scan_comics(folder_to_scan=None):
         scan_progress['in_progress'] = False
         scan_progress['message'] = "扫描完成"
         
-    return list(load_unified_comics().values())
+    return list(database.load_unified_comics().values())
 
 
 def auto_classify_comics(conn):
@@ -468,7 +291,7 @@ def auto_classify_comics(conn):
     cursor.execute("""
         SELECT ct.comic_title, t.name, ct.type
         FROM comic_tags ct JOIN tags t ON ct.tag_id = t.id
-    """)
+    """ )
     tags_rows = cursor.fetchall()
     tags_map = {}
     for row in tags_rows:
@@ -567,7 +390,7 @@ def handle_comic_created(comic_path):
     """处理新创建的漫画文件。"""
     try:
         print(f"[DB Update] 开始处理新漫画: {os.path.basename(comic_path)}")
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         comic_name = os.path.splitext(os.path.basename(comic_path))[0]
@@ -603,8 +426,8 @@ def handle_comic_created(comic_path):
             if len(cover_paths) == len(COVER_SIZES):
                 cursor.execute("""
                     UPDATE comics SET 
-                    local_cover_path_thumbnail = ?, 
-                    local_cover_path_medium = ?, 
+                    local_cover_path_thumbnail = ?,
+                    local_cover_path_medium = ?,
                     local_cover_path_large = ?
                     WHERE title = ?
                 """, (
@@ -630,7 +453,7 @@ def handle_comic_deleted(comic_path):
     """处理被删除的漫画文件。"""
     try:
         print(f"[DB Update] 开始处理删除: {os.path.basename(comic_path)}")
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 查找漫画以获取封面信息
@@ -677,7 +500,7 @@ def handle_comic_moved(src_path, dest_path):
     """处理移动或重命名的漫画文件。"""
     try:
         print(f"[DB Update] 开始处理移动/重命名: {os.path.basename(src_path)} -> {os.path.basename(dest_path)}")
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 查找旧漫画以获取信息
@@ -804,7 +627,7 @@ def _get_unified_comics(search_term='', filter_by='all', sort_by='date', sort_or
     """
     从数据库加载漫画数据，并转换为前端期望的格式，支持搜索、过滤、排序和分页。
     """
-    conn = get_db_connection()
+    conn = database.get_db_connection()
     cursor = conn.cursor()
 
     # --- 构建基础查询 ---
@@ -947,7 +770,7 @@ def get_comics():
         # 检查数据库是否为空
         if not paginated_comics and total_filtered_comics == 0:
              # 检查数据库中是否有任何漫画
-            conn = get_db_connection()
+            conn = database.get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1 FROM comics LIMIT 1")
             is_empty = cursor.fetchone() is None
@@ -984,7 +807,7 @@ def get_comic_stats():
     计算并返回各类漫画的数量 (数据库版)。
     """
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         stats = { "folders": {} }
@@ -1002,7 +825,7 @@ def get_comic_stats():
             FROM folders f
             JOIN comic_folders cf ON f.id = cf.folder_id
             GROUP BY f.name
-        """)
+        """ )
         for row in cursor.fetchall():
             stats['folders'][row[0]] = row[1]
         
@@ -1023,7 +846,7 @@ def get_comic_details(title):
     获取单本漫画的详细信息 (数据库版)。
     """
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 使用与 _get_unified_comics 类似的查询，但针对单个漫画
@@ -1101,7 +924,7 @@ def update_comic_display_name(title):
         return jsonify({"status": "error", "message": "缺少新的显示名称"}), 400
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("UPDATE comics SET displayName = ? WHERE title = ?", (new_display_name, title))
         conn.commit()
@@ -1120,7 +943,7 @@ def update_comic_display_name(title):
 # --- 文件夹 API ---
 @app.route('/api/folders', methods=['GET'])
 def api_get_folders():
-    folders = get_folders()
+    folders = database.get_folders()
     return jsonify(folders)
 
 @app.route('/api/folders', methods=['POST'])
@@ -1138,7 +961,7 @@ def api_add_folder():
     }
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO folders (name, auto, name_includes, tag_includes) VALUES (?, ?, ?, ?)",
@@ -1148,17 +971,18 @@ def api_add_folder():
         new_folder['id'] = cursor.lastrowid
         conn.close()
         return jsonify({"status": "success", "folder": new_folder_data}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({"status": "error", "message": "文件夹已存在"}), 409
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        # Catching generic exception to handle potential sqlite3.IntegrityError
+        # A more specific catch would be better if other errors are expected.
+        return jsonify({"status": "error", "message": "文件夹已存在或发生其他错误: " + str(e)}), 409
+
 
 @app.route('/api/folders/<string:folder_name>', methods=['PUT'])
 def api_update_folder(folder_name):
     data = request.json
     
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # Find the folder first
@@ -1197,7 +1021,7 @@ def api_update_folder(folder_name):
         conn.close()
         
         # Re-fetch the updated folder data to return it
-        updated_folder_data = next((f for f in get_folders() if f['name'] == (new_name or folder_name)), None)
+        updated_folder_data = next((f for f in database.get_folders() if f['name'] == (new_name or folder_name)), None)
         
         return jsonify({"status": "success", "folder": updated_folder_data})
     except Exception as e:
@@ -1207,7 +1031,7 @@ def api_update_folder(folder_name):
 @app.route('/api/folders/<string:folder_name>', methods=['DELETE'])
 def api_delete_folder(folder_name):
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         
         # Find folder id
@@ -1244,7 +1068,7 @@ def delete_single_comic():
         return jsonify({"status": "error", "message": "缺少标题"}), 400
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         
         cursor.execute("SELECT local_path, local_cover_path_thumbnail FROM comics WHERE title = ?", (title,))
@@ -1294,7 +1118,7 @@ def tampermonkey_sync():
     if not data:
         return jsonify({"status": "error", "message": "No data received"}), 400
     
-    conn = get_db_connection()
+    conn = database.get_db_connection()
     cursor = conn.cursor()
 
     try:
@@ -1368,7 +1192,7 @@ def tampermonkey_sync():
 
         conn.commit()
         print(f"油猴脚本数据同步完成，更新/新增 {updated_count} 条在线漫画信息。")
-        return jsonify({"status": "success", "message": "Data synced successfully."})
+        return jsonify({"status": "success", "message": "Data synced successfully."})))
 
     except Exception as e:
         conn.rollback()
@@ -1394,7 +1218,7 @@ def cleanup_database():
     """
     print("开始清理数据库...")
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute("SELECT title, local_path, local_cover_path_thumbnail, online_url FROM comics WHERE local_path IS NOT NULL")
@@ -1494,7 +1318,7 @@ def manage_folders():
             save_config(config)
 
             try:
-                conn = get_db_connection()
+                conn = database.get_db_connection()
                 cursor = conn.cursor()
                 
                 # 找到所有受影响的漫画
@@ -1554,7 +1378,7 @@ def relocate_folder():
 
     # 2. 更新数据库
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         
         # 规范化路径以处理 OS 差异
@@ -1596,7 +1420,7 @@ def handle_favorite():
         return jsonify({"status": "success"})
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         
         placeholders = ','.join('?' for _ in titles_to_update)
@@ -1623,7 +1447,7 @@ def delete_full_comics():
         return jsonify({"status": "success", "deleted_count": 0})
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         
         placeholders = ','.join('?' for _ in titles_to_delete)
@@ -1672,7 +1496,7 @@ def handle_single_tag(title):
         return jsonify({"status": "error", "message": "需要提供 'action' 和 'tag'"}), 400
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 获取 tag_id，如果不存在则创建
@@ -1715,7 +1539,7 @@ def handle_folder_assignment():
         return jsonify({"status": "error", "message": "无效的请求格式"}), 400
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 获取 folder_id
@@ -1746,7 +1570,7 @@ def remove_from_all_folders():
     if not titles_to_update:
         return jsonify({"status": "success"})
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         placeholders = ','.join('?' for _ in titles_to_update)
         cursor.execute(f"DELETE FROM comic_folders WHERE comic_title IN ({placeholders})", tuple(titles_to_update))
@@ -1767,7 +1591,7 @@ def merge_comics():
         return jsonify({"status": "error", "message": "缺少在线漫画或本地漫画的标题"}), 400
 
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
 
         # 获取本地漫画的信息
@@ -1780,8 +1604,11 @@ def merge_comics():
         # 更新在线漫画条目
         cursor.execute("""
             UPDATE comics SET
-                local_path = ?, local_source_folder = ?,
-                local_cover_path_thumbnail = ?, local_cover_path_medium = ?, local_cover_path_large = ?
+                local_path = ?,
+                local_source_folder = ?,
+                local_cover_path_thumbnail = ?,
+                local_cover_path_medium = ?,
+                local_cover_path_large = ?
             WHERE title = ? AND online_url IS NOT NULL
         """, (
             local_row['local_path'], local_row['local_source_folder'],
@@ -1812,7 +1639,7 @@ def get_comic_pages():
         pages = get_image_files_from_zip(comic_path)
         
         # 更新数据库中的 totalPages
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("UPDATE comics SET totalPages = ? WHERE local_path = ?", (len(pages), comic_path))
         conn.commit()
@@ -1850,7 +1677,7 @@ def update_progress():
     if not comic_path or not is_safe_path(comic_path) or page is None: return "无效请求", 400
     
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("UPDATE comics SET currentPage = ? WHERE local_path = ?", (page, comic_path))
         conn.commit()
@@ -1872,7 +1699,7 @@ def clean_cover_cache():
     """
     print("开始清理无效的封面缓存...")
     try:
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT local_cover_path_thumbnail FROM comics WHERE local_cover_path_thumbnail IS NOT NULL")
         
@@ -1915,7 +1742,7 @@ def clear_all_data():
     try:
         # 1. Close any active connections and delete DB file
         # (This is tricky in a web server context, better to just clear tables)
-        conn = get_db_connection()
+        conn = database.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM comics")
         cursor.execute("DELETE FROM tags")
@@ -1956,7 +1783,7 @@ def serve_static(path):
     return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
-    init_db()
+    database.init_db()
     
     # Start the initial scan in a background thread
     threading.Thread(target=scan_comics, daemon=True).start()
