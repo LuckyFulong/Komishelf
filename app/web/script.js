@@ -1211,8 +1211,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 `您确定要永久删除漫画 "${comic.displayName}" 吗？<br>这将删除本地文件和封面，此操作无法撤销。`,
                 async () => {
                     try {
-                        const response = await fetch(`/api/comic/${encodeURIComponent(comic.title)}`, {
-                            method: 'DELETE'
+                        const response = await fetch(`/api/comic/delete_single`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ title: comic.title })
                         });
                         if (!response.ok) {
                             const errorData = await response.json();
